@@ -1,0 +1,6 @@
+# COREave / COREtrm and the shared training runner.
+# Install the appropriate CUDA build of PyTorch for your GPU first.
+torch>=2.6
+recbole==1.2.1
+numpy==1.26.4
+tqdm>=4.64

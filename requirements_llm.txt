@@ -1,0 +1,5 @@
+# Install in the existing CUDA-enabled project environment.
+-r requirements.txt
+transformers==4.57.6
+peft==0.18.1
+accelerate==1.12.0

@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.idea/
+.pytest_cache/
+.chart-data-*/
+presentation/.build/
+presentation/.validated/
+log/
+log_tensorboard/
+saved/
+models/
+results/

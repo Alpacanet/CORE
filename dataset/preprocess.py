@@ -8,7 +8,7 @@ from tqdm import tqdm
 import datetime
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', default='diginetica', help='dataset name: diginetica/nowplaying/retailrocket/tmall/yoochoose')
+parser.add_argument('--dataset', default='tmall', help='dataset name: diginetica/nowplaying/retailrocket/tmall/yoochoose')
 opt = parser.parse_args()
 print(opt)
 

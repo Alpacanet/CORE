@@ -1,0 +1,80 @@
+{
+  "meta": {
+    "title": "Pure-ID Session-based Recommendation with LLMs",
+    "subtitle": "CORE + LLM Exploration",
+    "presenter": "Way",
+    "meeting_date": "October 5, 2026",
+    "meeting_label": "Research meeting"
+  },
+  "planning": {
+    "immediate_actions": [
+      "Gate and branch\ndiagnostics",
+      "Matched learning-rate\nsearch",
+      "Random-backbone\ncontrol",
+      "Paired-seed\nvalidation"
+    ],
+    "positive_signal_actions": [
+      "Run paired seeds",
+      "Add a random-backbone control",
+      "Lock the design before final test evaluation"
+    ]
+  },
+  "sources": {
+    "experiment_record": "README_LLM.md",
+    "training_guide": "README_TRAINING.md",
+    "topic_note": "docs/research_notes.md"
+  },
+  "experiment": {
+    "dataset": "Tmall",
+    "split": {
+      "train": 275356,
+      "valid": 50579,
+      "test": 101862
+    },
+    "items_including_padding": 37367,
+    "max_session_length": 50,
+    "seed": 2020,
+    "metric_selection": "Valid MRR@20",
+    "comparison_label": "single-seed preliminary validation comparison",
+    "models": {
+      "coreave": {
+        "label": "COREave",
+        "status": "complete",
+        "recall10": 0.3082,
+        "recall20": 0.3471,
+        "mrr10": 0.1909,
+        "mrr20": 0.1936,
+        "epoch_time_sec": 47.2,
+        "trainable_parameters": 3736700,
+        "source": "results/phase1/20261005-115750-tmall-ave-9cf3dc"
+      },
+      "coretrm": {
+        "label": "COREtrm",
+        "status": "complete",
+        "recall10": 0.3079,
+        "recall20": 0.3457,
+        "mrr10": 0.191,
+        "mrr20": 0.1936,
+        "epoch_time_sec": 100.91,
+        "trainable_parameters": 3926713,
+        "source": "results/phase1/20261005-120616-tmall-trm-32ec4d"
+      },
+      "llm": {
+        "label": "CORE + Qwen3-0.6B + LoRA",
+        "status": "interrupted after 7 completed epochs",
+        "recall10": 0.3023,
+        "recall20": 0.3414,
+        "mrr10": 0.1869,
+        "mrr20": 0.1896,
+        "epoch_time_sec": 3538.43,
+        "trainable_parameters": 6238633,
+        "best_epoch": 1,
+        "later_recall20": 0.357,
+        "later_recall20_epoch": 3,
+        "later_mrr20": 0.1868,
+        "source": "results/phase1/20261002-132157-tmall-pretrained_lora-4d00c9"
+      }
+    },
+    "test_evaluated": false
+  }
+}
