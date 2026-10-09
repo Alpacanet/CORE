@@ -1,0 +1,5 @@
+# Optional interactive environment for evaluate.ipynb.
+# LLM evaluation additionally requires requirements_llm.txt and the model cache.
+-r requirements.txt
+ipykernel>=6
+jupyterlab>=4

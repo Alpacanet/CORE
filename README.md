@@ -21,7 +21,7 @@ CORE/
   train.py                   # 统一命令行入口与模型恢复
   trainer.py                 # 共享训练器 CORETrainer
   evaluator.py               # overall / review / explore 指标累计
-  evaluate.py                # 恢复已有检查点，仅复评，不训练
+  evaluate.ipynb             # 交互式恢复与复评已有检查点
   train_ave.py                # AVE 的 IDE 直接运行入口
   train_trm.py                # TRM 的 IDE 直接运行入口
   train_llm.py                # LLM 的 IDE 直接运行入口
@@ -35,6 +35,7 @@ CORE/
   docs/research_notes.md      # LLM 方案的历史文献笔记
   requirements.txt           # AVE / TRM 基础依赖
   requirements_llm.txt       # 基础依赖加 LLM 依赖
+  requirements_notebook.txt  # 可选 Notebook 运行依赖
 ```
 
 已有项目环境可以直接使用 `.venv`。迁移环境时，AVE/TRM 安装 `requirements.txt`，LLM 安装 `requirements_llm.txt`；后者包含前者。安装 PyTorch 时应按实际设备选择 CUDA 或 CPU 版本。
@@ -66,13 +67,27 @@ CORE/
 
 新训练默认在每轮验证中单次遍历统计 `overall`、`review`、`explore` 的样本数、比例及 Recall/MRR@10/@20，并保存到 `epochs.json`、`metrics.json` 与 `review_explore.json`。空组指标为 `null`；未舍入的整体指标应由非空两组按样本比例加权复原。`predictions.json` 增加真实目标的 `target_group`。2026-10-09 的独立复评已补充三组旧检查点的全量验证分组结果，原始训练记录保持原样；测试集仍未评估。
 
-例如，仅复评已有 AVE 最佳检查点的验证集：
+复评入口是 [evaluate.ipynb](evaluate.ipynb)。当前项目环境尚未安装 Jupyter 相关包；使用 Notebook 时先安装可选依赖：
 
 ```powershell
-.\.venv\Scripts\python.exe evaluate.py --run-directory results/phase1/20261005-115750-tmall-ave-9cf3dc --split valid --device cuda --eval-batch-size 32
+.\.venv\Scripts\python.exe -m pip install -r requirements_notebook.txt
 ```
 
-复评会新建 `results/core/evaluation-.../`，保存 `review_explore.json` 和 `metrics.json`，不训练、不覆盖原运行。默认 `--split valid`；方案固定后显式指定 `--split test` 才评估测试集。加 `--limit 128` 只检查验证集前缀子集，结果范围标为 `prefix_subset`，不能作为全量分组结论；训练 smoke 的范围标为 `smoke_subset`。
+在 PyCharm、VS Code 或 Jupyter 中打开 Notebook，选择项目 `.venv` 的 Python 内核，配置参数后从上到下运行。默认复评旧 AVE 检查点的完整验证集：
+
+```python
+RUN_DIRECTORY = RUN_DIRECTORIES["ave"]
+# RUN_DIRECTORY = RUN_DIRECTORIES["trm"]
+# RUN_DIRECTORY = RUN_DIRECTORIES["llm"]
+SPLIT = "valid"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+EVAL_BATCH_SIZE = 32
+LIMIT = None
+```
+
+Notebook 先定义 `evaluate_experiment`，再在执行单元格复评选中的一个检查点，并以 DataFrame 显示分组样本数、比例和 Recall/MRR@10/@20。可选对比单元格只读取 2026-10-09 已有结果，不自动复评其他模型。LLM 仍需要 `requirements_llm.txt` 与固定版本模型缓存。复评会新建 `results/core/evaluation-.../`，保存原有 JSON 报告，不训练、不覆盖原运行。
+
+默认 `SPLIT="valid"`；方案固定后显式设为 `"test"` 才评估测试集。`LIMIT=128` 只检查所选 split 的前缀子集，结果范围标为 `prefix_subset`，不能作为全量结论；`LIMIT=None` 才是完整 split。训练 smoke 的范围仍为 `smoke_subset`。更多说明见 [训练指南](README_TRAINING.md)。
 
 项目基于 CORE 的官方 PyTorch 实现：[CORE: Simple and Effective Session-based Recommendation within Consistent Representation Space](https://arxiv.org/abs/2204.11067)，SIGIR 2022 short。原始 CORE 的核心是让会话表示保持为历史商品向量的加权和；LLM 投影和融合属于扩展变体。数据格式遵循 RecBole，原始处理数据下载入口为 [Google Drive](https://drive.google.com/drive/folders/1dlJ3PzcT5SCN8-Mocr_AIQPGk9DVgTWB?usp=sharing)。方案背景可参考 [历史文献笔记](docs/research_notes.md)，其中的建议不代表本项目已经实现或验证。
 

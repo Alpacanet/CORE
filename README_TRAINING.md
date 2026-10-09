@@ -2,7 +2,7 @@
 
 AVE、TRM、LLM 共用 `train.py` 和 `trainer.py` 中的 `CORETrainer`。三模型默认采用相同的数据文件、seed、micro-batch、梯度累积、优化器和评价流程。模型配置是 `configs/core_ave.yaml`、`configs/core_trm.yaml`、`configs/core_llm.yaml`，公共设置在 `configs/common.yaml`。模型原理分别见 [AVE](README_AVE.md)、[TRM](README_TRM.md)、[LLM](README_LLM.md)。
 
-当前研究首先通过 review/explore 分组回答：LLM 是否在 explore 上获益、在 review 上退步，还是两组均没有改善？新训练会自动保存分组评价；已有可信检查点可以用 `evaluate.py` 单独复评，无需重新训练。
+当前研究首先通过 review/explore 分组回答：LLM 是否在 explore 上获益、在 review 上退步，还是两组均没有改善？新训练会自动保存分组评价；已有可信检查点可以用 [evaluate.ipynb](evaluate.ipynb) 单独复评，无需重新训练。
 
 ## 环境与数据
 
@@ -94,21 +94,50 @@ MRR@20 是选择模型的主指标，Recall@20 衡量目标进入前 20 的比�
 
 ## 🔄 仅复评已有检查点
 
-`evaluate.py` 恢复传入运行目录的可信最佳检查点，不进行训练。默认选择验证集 `--split valid`，设备可用 `cpu` 或 `cuda`。未指定 `--eval-batch-size` 时沿用原运行配置，本文三组匹配实验的评价 batch 为 32；可显式传 32 保持一致。以下例子对已有 AVE 基线进行全量验证复评：
+[evaluate.ipynb](evaluate.ipynb) 恢复配置运行目录中的可信最佳检查点，不进行训练。它在 Notebook 内定义 `evaluate_experiment`，保留原有恢复、分组评价与报告保存方法，复用 `evaluator.py`、`trainer.py` 和 `train.py`。
+
+当前项目 `.venv` 尚未安装 Jupyter 相关包。需要使用 Notebook 时安装可选依赖；这份清单包含基础依赖、`ipykernel>=6` 与 `jupyterlab>=4`：
 
 ```powershell
-.\.venv\Scripts\python.exe evaluate.py --run-directory results/phase1/20261005-115750-tmall-ave-9cf3dc --split valid --device cuda --eval-batch-size 32
+.\.venv\Scripts\python.exe -m pip install -r requirements_notebook.txt
 ```
 
-替换 `--run-directory` 为 TRM、LLM 或新的 `results/core/` 运行目录，即可采用相同协议复评。原模型的依赖、数据哈希和商品映射校验仍适用；恢复 LLM 需要固定版本的模型缓存。CPU 也可以使用 `--device cpu`，实际速度和精度差异需记录。
+如果恢复 LLM，还需要 `requirements_llm.txt` 中的依赖和固定版本的模型缓存；Notebook 依赖清单不包含 LLM 的扩展依赖。
 
-只想检查流程时，可限定所选 split 的前 128 条：
+1. 在 PyCharm、VS Code 或 Jupyter 中打开 `evaluate.ipynb`。
+2. 选择项目 `.venv` 的 Python 内核，即 `D:\DataSciencePractise\CORE\.venv\Scripts\python.exe` 对应的环境。
+3. 在参数单元格选择一个检查点目录、split、设备、batch 和样本范围。
+4. 从上到下运行导入、参数、函数定义、执行和展示单元格。
 
-```powershell
-.\.venv\Scripts\python.exe evaluate.py --run-directory results/phase1/20261005-115750-tmall-ave-9cf3dc --split valid --device cpu --limit 128
+Notebook 的 `RUN_DIRECTORIES` 字典已映射三组已有最佳检查点。参数默认选 AVE，也可改为 TRM 或 LLM；每次执行只复评当前选中的一个模型：
+
+```python
+RUN_DIRECTORY = RUN_DIRECTORIES["ave"]
+# RUN_DIRECTORY = RUN_DIRECTORIES["trm"]
+# RUN_DIRECTORY = RUN_DIRECTORIES["llm"]
+SPLIT = "valid"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+EVAL_BATCH_SIZE = 32
+LIMIT = None
 ```
 
-`--limit` 的结果范围标为 `prefix_subset`，只代表所选 split 的前缀子集，不能视为全量效果报告；新训练的 smoke 范围标为 `smoke_subset`。未加 `--limit` 才是该 split 的全量复评。若方案已固定并需要最终测试，显式使用 `--split test`；默认命令不会评估测试集。
+也可把 `RUN_DIRECTORY` 设为新的 `results/core/` 训练目录。原模型的依赖、数据哈希和商品映射校验仍适用。`DEVICE` 在 CUDA 可用时默认 `"cuda"`，否则为 `"cpu"`，也可显式设为 CPU；实际速度和精度差异需记录。评价 batch 默认显式设为 32。
+
+函数定义单元格运行后，执行单元格调用：
+
+```python
+result = evaluate_experiment(
+    RUN_DIRECTORY,
+    split=SPLIT,
+    device=DEVICE,
+    eval_batch_size=EVAL_BATCH_SIZE,
+    limit=LIMIT,
+)
+```
+
+随后显示 `overall`、`review`、`explore` 的样本数、比例及 Recall/MRR@10/@20 DataFrame。可选的历史比较单元格只读取已保存的 2026-10-09 三组结果，不自动额外复评其他模型。
+
+`LIMIT=None` 表示所选 split 的全量复评；只想检查流程时设 `LIMIT=128`，结果范围标为 `prefix_subset`，只能描述前缀子集，不能视为全量效果报告。新训练的 smoke 范围仍为 `smoke_subset`。默认 `SPLIT="valid"` 不评估测试集；方案固定后显式改为 `SPLIT="test"`，才执行最终测试。
 
 每次复评创建独立的 `results/core/evaluation-.../`，保存 `review_explore.json` 和 `metrics.json`，记录来源运行目录、检查点 SHA256、实际检查点轮次 `best_epoch`、split 和样本范围等元数据。原始训练目录、指标与检查点保持原样。终端打印 `CORE_EVALUATION_DIR`，成功结束打印 `CORE_EVALUATION_COMPLETE`。
 

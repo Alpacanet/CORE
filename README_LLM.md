@@ -415,17 +415,23 @@ LLM 与两组新基线的全量测试指标：**均未评估**。旧测试结果
 
 两组目录均包含 `best.pth`、`config.json`、`manifest.json`、`item_tokens.json` 和 `predictions.json`。这些 `predictions.json` 是最佳检查点在验证集上抽取的 5 条示例，不是全量测试结果；`prediction_split=valid`。可用于学习查看推荐 ID，但不能用这几条示例判断整体效果。
 
-### 后续命令示例：只记录，不自动执行
+### 后续 Notebook 与训练参数示例
 
-以下命令用于复现 2026-10-09 已完成的三组全量验证分组复评；它们不启动训练，再次执行会产生新的独立评价目录：
+复评入口改为 [evaluate.ipynb](evaluate.ipynb)。在 PyCharm、VS Code 或 Jupyter 中打开，选择项目 `.venv` 的 Python 内核，配置参数后从上到下运行。Notebook 默认只复评选中的旧 AVE 检查点；`RUN_DIRECTORIES` 字典也提供 TRM、LLM 的对应目录：
 
-```powershell
-.\.venv\Scripts\python.exe evaluate.py --run-directory results/phase1/20261005-115750-tmall-ave-9cf3dc --split valid --device cuda --eval-batch-size 32
-.\.venv\Scripts\python.exe evaluate.py --run-directory results/phase1/20261005-120616-tmall-trm-32ec4d --split valid --device cuda --eval-batch-size 32
-.\.venv\Scripts\python.exe evaluate.py --run-directory results/phase1/20261002-132157-tmall-pretrained_lora-4d00c9 --split valid --device cuda --eval-batch-size 32
+```python
+RUN_DIRECTORY = RUN_DIRECTORIES["ave"]
+# RUN_DIRECTORY = RUN_DIRECTORIES["trm"]
+# RUN_DIRECTORY = RUN_DIRECTORIES["llm"]
+SPLIT = "valid"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+EVAL_BATCH_SIZE = 32
+LIMIT = None
 ```
 
-每次复评在新的 `results/core/evaluation-.../` 中保存 `review_explore.json` 与 `metrics.json`，记录实际检查点轮次 `best_epoch` 和检查点 SHA256，不覆盖原始训练记录。默认 split 是 `valid`；方案固定后显式指定 `--split test` 才进行测试。需要检查流程时可加 `--limit 128`，其结果明确标为 `prefix_subset`，只描述验证集前缀子集，不能视为全量效果；新训练 smoke 的范围标为 `smoke_subset`。
+函数定义单元格提供 `evaluate_experiment`，执行单元格生成 `result`；随后用 DataFrame 显示分组样本数、比例和 Recall/MRR@10/@20。可选比较单元格只读取 2026-10-09 已保存的三组结果，不自动再复评其他模型。当前环境尚未安装 Jupyter 相关包，使用前可安装 `requirements_notebook.txt`；复评 LLM 仍需 `requirements_llm.txt` 与固定版本模型缓存，详见 [训练指南](README_TRAINING.md)。
+
+每次执行复评会在新的 `results/core/evaluation-.../` 中保存 `review_explore.json` 与 `metrics.json`，记录实际检查点轮次 `best_epoch` 和检查点 SHA256，不训练、不覆盖原始训练记录。默认 `SPLIT="valid"`；方案固定后显式设为 `SPLIT="test"` 才进行测试。`LIMIT=None` 表示完整 split；需要检查流程时设 `LIMIT=128`，结果标为 `prefix_subset`，只能描述前缀子集，不能视为全量效果。新训练 smoke 的范围仍为 `smoke_subset`。以上参数可以复现 2026-10-09 的复评协议，不改写已经保存的历史数值。
 
 完成分组诊断、决定继续有限学习率搜索后，可使用下面的 LLM 新训练示例；正式重复前先处理前述随机性问题。每次只运行一条，不与现有任务同时争用同一张 GPU：
 
