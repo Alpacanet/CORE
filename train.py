@@ -66,6 +66,25 @@ def _write_json(path, value):
                     encoding='utf-8')
 
 
+def _review_explore_report(topk, *, valid=None, test=None, best_epoch=None, scope='full'):
+    """Explicit analysis semantics shared by training and checkpoint evaluation."""
+    return {
+        'schema_version': 1,
+        'definition': {
+            'review': 'Ground-truth next item occurs in the nonpadding input session.',
+            'explore': 'Ground-truth next item does not occur in the nonpadding input session.',
+        },
+        'session_scope': 'Model-visible input history after configured length truncation.',
+        'ranking_policy': 'Full catalog; padding ID 0 excluded; history items remain eligible.',
+        'topk': list(topk),
+        'metric_precision': 'Unrounded sample means; RecBole summary metrics are rounded separately.',
+        'scope': scope,
+        'best_epoch': best_epoch,
+        'valid': valid,
+        'test': test,
+    }
+
+
 def _package_versions():
     """Record installed packages without requiring optional LLM dependencies."""
     packages = {}
@@ -105,9 +124,11 @@ def _sample_predictions(model, dataset, device, count=5):
     records = []
     for row in range(len(interaction)):
         history = interaction[model.ITEM_SEQ][row].tolist()
+        target = int(interaction[model.POS_ITEM_ID][row])
         records.append({
             'history_item_ids': [str(tokens[x]) for x in history if x != 0],
-            'target_item_id': str(tokens[int(interaction[model.POS_ITEM_ID][row])]),
+            'target_item_id': str(tokens[target]),
+            'target_group': 'review' if target in history and target != 0 else 'explore',
             'top20_item_ids': [str(tokens[x]) for x in ids[row].tolist()],
             'top20_scores': best_scores[row].float().tolist(),
         })
@@ -232,6 +253,9 @@ def run_experiment(options=None, **overrides):
                             config_dict=settings)
         finally:
             sys.argv = original_argv
+        # RecBole 1.2.1 derives device from gpu_id, ignoring use_gpu=False.
+        # Honor the runner's explicit CPU choice even on a CUDA-capable host.
+        config['device'] = torch.device(options.device)
         init_seed(config['seed'], config['reproducibility'])
         init_logger(config)
         _write_json(run_dir / 'config.json', config.final_config_dict)
@@ -287,6 +311,7 @@ def run_experiment(options=None, **overrides):
                 'random_lora controls frozen pretraining, not a fully trained random Transformer.',
                 'Hybrid projection/fusion is not the original strict CORE RCE.',
                 'Smoke results are engineering checks, not evidence of improvement.',
+                'Review/explore groups use ground-truth target membership in the visible input session.',
             ],
         }
         _write_json(run_dir / 'manifest.json', manifest)
@@ -295,18 +320,31 @@ def run_experiment(options=None, **overrides):
         trainer = CORETrainer(config, model)
         trainer.saved_model_file = str(run_dir / 'best.pth')
         best_score, best_valid = trainer.fit(train_data, valid_data, saved=True, show_progress=False)
+        checkpoint = torch.load(trainer.saved_model_file, map_location=config['device'], weights_only=False)
+        best_epoch = int(checkpoint['epoch'])
+        best_valid_groups = next(
+            record['valid_review_explore'] for record in trainer.epoch_records
+            if record['epoch'] == best_epoch and 'valid_review_explore' in record
+        )
         evaluate_test = options.test or options.smoke
         test_result = trainer.evaluate(test_data, load_best_model=True, show_progress=False) if evaluate_test else None
+        test_groups = trainer.last_review_explore_result if evaluate_test else None
         if not evaluate_test:
-            checkpoint = torch.load(trainer.saved_model_file, map_location=config['device'], weights_only=False)
             model.load_state_dict(checkpoint['state_dict'])
             model.load_other_parameter(checkpoint.get('other_parameter'))
+        _write_json(run_dir / 'review_explore.json', _review_explore_report(
+            config['topk'], valid=best_valid_groups, test=test_groups,
+            best_epoch=best_epoch, scope='smoke_subset' if options.smoke else 'full',
+        ))
         _write_json(run_dir / 'predictions.json', _sample_predictions(
             model, (test_data if evaluate_test else valid_data).dataset, config['device']))
         _write_json(run_dir / 'epochs.json', trainer.epoch_records)
         summary.update(status='complete', best_valid_score=float(best_score),
                        best_valid_result=dict(best_valid),
+                       best_valid_review_explore=best_valid_groups,
                        test_result=dict(test_result) if test_result is not None else None,
+                       test_review_explore=test_groups,
+                       best_epoch=best_epoch,
                        prediction_split='test' if evaluate_test else 'valid',
                        checkpoint=str(run_dir / 'best.pth'),
                        epochs_completed=len(trainer.epoch_records),
@@ -317,6 +355,7 @@ def run_experiment(options=None, **overrides):
                        finished_at_utc=datetime.now(timezone.utc).isoformat())
         _write_json(run_dir / 'metrics.json', summary)
         print('BEST_VALID=' + json.dumps(best_valid), flush=True)
+        print('BEST_VALID_REVIEW_EXPLORE=' + json.dumps(best_valid_groups), flush=True)
         print('TEST=' + json.dumps(test_result) if evaluate_test else 'TEST=not evaluated (use --test for final run)', flush=True)
         print(f'CORE_COMPLETE={run_dir}', flush=True)
         return summary

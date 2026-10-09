@@ -1,13 +1,41 @@
 """Shared RecBole trainer for ave, trm, and continuous-input LLM models."""
 
+from contextlib import contextmanager
 from time import perf_counter
 
+import numpy as np
 import torch
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 
 from recbole.trainer import Trainer
+from recbole.evaluator import metrics as recbole_metrics
 from recbole.utils import get_gpu_usage, set_color
+
+from evaluator import ReviewExploreAccumulator
+
+
+class _MetricNumpyCompatibility:
+    """RecBole 1.2.1 still uses aliases removed in NumPy >= 1.24."""
+
+    def __getattr__(self, name):
+        if name == "float":
+            return float
+        if name == "bool":
+            return bool
+        return getattr(np, name)
+
+
+@contextmanager
+def _recbole_metric_numpy_compatibility():
+    # Limit compatibility to RecBole's metric module and this evaluation call;
+    # do not change the installed library or attach aliases to global NumPy.
+    original_numpy = recbole_metrics.np
+    recbole_metrics.np = _MetricNumpyCompatibility()
+    try:
+        yield
+    finally:
+        recbole_metrics.np = original_numpy
 
 
 class CORETrainer(Trainer):
@@ -34,7 +62,63 @@ class CORETrainer(Trainer):
             raise ValueError("gradient_accumulation_steps must be a positive integer.")
         self.gradient_accumulation_steps = accumulation_steps
         self.epoch_records = []
+        self.last_review_explore_result = None
+        self._review_explore_accumulator = None
         super().__init__(config, model)
+
+    def evaluate(self, eval_data, load_best_model=True, model_file=None, show_progress=False):
+        """Keep RecBole ranking/selection intact and collect target-based groups.
+
+        Group metrics use the SAME full-catalog scores as the standard evaluator;
+        no second model forward and no review/explore candidate restriction.
+        """
+        self.last_review_explore_result = None
+        self._review_explore_accumulator = ReviewExploreAccumulator(self.config["topk"])
+        try:
+            with _recbole_metric_numpy_compatibility():
+                result = super().evaluate(
+                    eval_data, load_best_model=load_best_model,
+                    model_file=model_file, show_progress=show_progress,
+                )
+            if result is not None:
+                self.last_review_explore_result = self._review_explore_accumulator.compute()
+            return result
+        except BaseException:
+            # RecBole normally clears evaluation tensors only on completion.
+            # Clear a partial failed pass too, preserving train-data resources,
+            # so a later retry cannot average old and new batches together.
+            self.eval_collector.get_data_struct()
+            raise
+        finally:
+            # Failed or empty evaluations must never reuse a previous split.
+            self._review_explore_accumulator = None
+
+    def _full_sort_batch_eval(self, batched_data):
+        result = super()._full_sort_batch_eval(batched_data)
+        accumulator = getattr(self, "_review_explore_accumulator", None)
+        if accumulator is not None:
+            interaction, scores, positive_u, positive_i = result
+            targets = interaction[self.model.POS_ITEM_ID]
+            rows = torch.arange(len(interaction), device=positive_u.device)
+            if not torch.equal(positive_u, rows) or not torch.equal(
+                positive_i.detach().cpu(), targets.detach().cpu()
+            ):
+                raise ValueError("Review/explore evaluation requires one aligned target per session.")
+            accumulator.update(scores, interaction[self.model.ITEM_SEQ], targets)
+        return result
+
+    def _neg_sample_batch_eval(self, batched_data):
+        raise ValueError("CORE review/explore evaluation requires a full-sort data loader.")
+
+    def _valid_epoch(self, valid_data, show_progress=False):
+        score, result = super()._valid_epoch(valid_data, show_progress=show_progress)
+        if self.epoch_records:
+            self.epoch_records[-1].update(
+                valid_result=dict(result),
+                valid_review_explore=self.last_review_explore_result,
+            )
+        self.logger.info("Review/explore validation: %s", self.last_review_explore_result)
+        return score, result
 
     def _build_optimizer(self, **kwargs):
         """Keep frozen weights out of the optimizer and its checkpoint state."""

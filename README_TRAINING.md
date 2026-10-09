@@ -2,6 +2,8 @@
 
 AVE、TRM、LLM 共用 `train.py` 和 `trainer.py` 中的 `CORETrainer`。三模型默认采用相同的数据文件、seed、micro-batch、梯度累积、优化器和评价流程。模型配置是 `configs/core_ave.yaml`、`configs/core_trm.yaml`、`configs/core_llm.yaml`，公共设置在 `configs/common.yaml`。模型原理分别见 [AVE](README_AVE.md)、[TRM](README_TRM.md)、[LLM](README_LLM.md)。
 
+当前研究首先通过 review/explore 分组回答：LLM 是否在 explore 上获益、在 review 上退步，还是两组均没有改善？新训练会自动保存分组评价；已有可信检查点可以用 `evaluate.py` 单独复评，无需重新训练。
+
 ## 环境与数据
 
 选择项目 `.venv` 解释器。迁移环境时，AVE/TRM 安装基础依赖，LLM 安装含基础依赖的扩展清单：
@@ -58,13 +60,29 @@ LLM 默认 LoRA rank 8 / alpha 16 / dropout 0.05，预训练本体冻结，训�
 
 可选 `--fusion llm_only` 去掉门控 CORE 分支；`--core-branch trm` 则与 TRM 分支融合。正式比较保持相同 micro-batch、累积、seed 与调参预算。累积按实际样本数加权，处理最后不足窗口的 batch；dropout 的随机抽样使它不保证与单个大 batch 数值完全相同。
 
+## 🔍 Review/explore 分组评价
+
+分组依据是每条样本的真实下一商品 `item_id` 是否出现在模型实际可见的非 padding `item_id_list` 中：
+
+| 分组 | 条件 |
+| --- | --- |
+| `review` | 可见历史中至少有一个非零 ID 等于真实目标 ID |
+| `explore` | 可见历史中没有与真实目标 ID 相等的非零 ID |
+
+序列长度上限为 50，定义只使用经过数据处理和截断后传入模型的历史。若目标仅出现在已截掉的历史中，该样本仍属于 `explore`。分组不使用预测 Top-1，也不表示目标在完整未截断会话、训练集或全局商品表中从未出现；它描述的是本条样本的可见历史与真实目标的关系。
+
+模型仍为完整商品表产生一次排序，只排除 padding ID 0。两组不分别缩小候选集，不屏蔽历史商品。`evaluator.py` 按同一批全商品 Top-K 排名累计 `overall`、`review`、`explore` 的样本数 `count`、样本比例 `fraction`、Recall/MRR；默认 K 为 10 和 20。空组的 Recall/MRR 为 `null`，不按 0 分处理。非空两组指标按各自样本比例加权应等于未舍入的整体指标，空组不参与加权；RecBole 的常规指标摘要会另行舍入。
+
+先检查分组比例，再用相同验证样本与排名协议比较 AVE/TRM/LLM 的组内指标和 `LLM - 基线` 差值。整体下降可能包含某组收益与另一组损失的抵消，必须用实际分组结果判断。之后才按组分析门控、CORE/LLM 分支表示和排序；随机冻结主干、多 seed 配对及等预算调参继续用于检验归因和稳定性。
+
 ## 输出与指标
 
 每次运行创建新的 `results/core/日期-数据集-模型或变体-编号/`，打印 `CORE_RESULT_DIR=...`；正常结束还打印 `CORE_COMPLETE=...`。历史 `results/phase1/` 目录保持原样。
 
-- `metrics.json`：运行状态、最佳验证指标、测试指标（如有）；`complete` 为正常结束，`failed` 记录失败原因，主动中止为 `interrupted`。
-- `epochs.json`：每轮平均训练 loss、样本数、优化器更新次数、耗时、训练峰值显存。
-- `predictions.json`：最佳检查点对 5 条样本的真实历史 ID、目标 ID、Top-20 推荐 ID 与分数。全量不评估测试时来自验证集，查看 `prediction_split`；分数不是概率。
+- `metrics.json`：运行状态、最佳验证指标、测试指标（如有），以及 `best_valid_review_explore` / `test_review_explore`；`complete` 为正常结束，`failed` 记录失败原因，主动中止为 `interrupted`。
+- `epochs.json`：每轮平均训练 loss、样本数、优化器更新次数、耗时、训练峰值显存，以及 `valid_result` / `valid_review_explore`。整体与分组验证在一次遍历中完成。
+- `review_explore.json`：分组定义、候选集和评价范围等元数据，以及最佳验证检查点的 `valid` / `test` 分组结果与 `best_epoch`；未执行测试时不填入测试指标。
+- `predictions.json`：最佳检查点对 5 条样本的真实历史 ID、目标 ID、真实目标分组 `target_group`、Top-20 推荐 ID 与分数。全量不评估测试时来自验证集，查看 `prediction_split`；分数不是概率。
 - `config.json` / `manifest.json`：完整配置、版本、参数量、输入文件与商品映射哈希。
 - `best.pth`：最佳验证检查点；LLM 冻结权重不重复保存，重建需要相同缓存、模型版本、seed 与商品映射。
 - `item_tokens.json`：内部 ID 到原始商品 token 的映射，推荐示例已经反映射。
@@ -72,7 +90,27 @@ LLM 默认 LoRA rank 8 / alpha 16 / dropout 0.05，预训练本体冻结，训�
 
 MRR@20 是选择模型的主指标，Recall@20 衡量目标进入前 20 的比例，MRR@20 同时考虑排名。0.20 表示 20%，不是 0.20%；MRR 不是点击概率，`1 / MRR` 也不是平均排名。训练 loss 下降不保证排序指标提高。
 
-2026-10-05 的 AVE/TRM 与 2026-10-02 的 LLM 原始结果及结论见 [LLM 实验记录](README_LLM.md)。这些记录未因重构重新训练或修改指标。旧 CORE 日志使用不同 batch、设备和预算，只能作历史参考。判断 LLM 是否值得继续，需要稳定优于匹配 CORE 基线、优于随机冻结主干，并结合时间/显存成本；多 seed 可以采用 2020、2021、2022 配对复核。
+2026-10-05 的 AVE/TRM 与 2026-10-02 的 LLM 原始结果及结论见 [LLM 实验记录](README_LLM.md)。这些记录未因重构重新训练或修改指标，原始运行尚未保存 review/explore 分组结果；新统计应通过独立复评补充。旧 CORE 日志使用不同 batch、设备和预算，只能作历史参考。判断 LLM 是否值得继续，先核对两组相对匹配 CORE 的增减，再检验随机冻结主干和多 seed 稳定性，并结合时间/显存成本；多 seed 可以采用 2020、2021、2022 配对复核。
+
+## 🔄 仅复评已有检查点
+
+`evaluate.py` 恢复传入运行目录的可信最佳检查点，不进行训练。默认选择验证集 `--split valid`，设备可用 `cpu` 或 `cuda`。未指定 `--eval-batch-size` 时沿用原运行配置，本文三组匹配实验的评价 batch 为 32；可显式传 32 保持一致。以下例子对已有 AVE 基线进行全量验证复评：
+
+```powershell
+.\.venv\Scripts\python.exe evaluate.py --run-directory results/phase1/20261005-115750-tmall-ave-9cf3dc --split valid --device cuda --eval-batch-size 32
+```
+
+替换 `--run-directory` 为 TRM、LLM 或新的 `results/core/` 运行目录，即可采用相同协议复评。原模型的依赖、数据哈希和商品映射校验仍适用；恢复 LLM 需要固定版本的模型缓存。CPU 也可以使用 `--device cpu`，实际速度和精度差异需记录。
+
+只想检查流程时，可限定所选 split 的前 128 条：
+
+```powershell
+.\.venv\Scripts\python.exe evaluate.py --run-directory results/phase1/20261005-115750-tmall-ave-9cf3dc --split valid --device cpu --limit 128
+```
+
+`--limit` 的结果范围标为 `prefix_subset`，只代表所选 split 的前缀子集，不能视为全量效果报告；新训练的 smoke 范围标为 `smoke_subset`。未加 `--limit` 才是该 split 的全量复评。若方案已固定并需要最终测试，显式使用 `--split test`；默认命令不会评估测试集。
+
+每次复评创建独立的 `results/core/evaluation-.../`，保存 `review_explore.json` 和 `metrics.json`，记录来源运行目录、检查点 SHA256、实际检查点轮次 `best_epoch`、split 和样本范围等元数据。原始训练目录、指标与检查点保持原样。终端打印 `CORE_EVALUATION_DIR`，成功结束打印 `CORE_EVALUATION_COMPLETE`。
 
 ## 恢复模型与实现检查
 
@@ -100,3 +138,5 @@ model, config, splits = load_experiment(
 ```
 
 单元测试不下载模型，使用本地 tiny Qwen 检查 causal mask、padding、冻结梯度、LoRA 隔离、紧凑检查点恢复和商品映射不匹配拒绝。真实 Tmall smoke 检查 RecBole 与 GPU 管线；二者都不替代科学效果评估。
+
+2026-10-09 的接入检查包含 37 项单元与集成测试，以及 AVE/TRM/tiny LLM 三组工程 smoke。检查同时修正了 RecBole 1.2.1 评价中的旧 NumPy 别名兼容问题和 CUDA 可用时忽略 `--device cpu` 的设备选择问题；兼容处理限于评价调用，不修改已安装的依赖或全局 NumPy。模型结构、训练损失和历史检查点不变。
